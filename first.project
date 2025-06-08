@@ -1,0 +1,307 @@
+rom flask import Flask, render_template, request, redirect, url_for
+import sqlite3
+import heapq
+from datetime import datetime
+
+app = Flask(_name_)
+
+# Initialize database
+def init_db():
+    conn = sqlite3.connect('railway.db')
+    cursor = conn.cursor()
+    
+    # Drop tables if they exist
+    cursor.execute("DROP TABLE IF EXISTS stations")
+    cursor.execute("DROP TABLE IF EXISTS trains")
+    cursor.execute("DROP TABLE IF EXISTS passengers")
+    cursor.execute("DROP TABLE IF EXISTS bookings")
+    cursor.execute("DROP TABLE IF EXISTS routes")
+    
+    # Create tables
+    cursor.execute('''CREATE TABLE stations (
+                    id INTEGER PRIMARY KEY,
+                    name TEXT NOT NULL,
+                    code TEXT UNIQUE NOT NULL)''')
+    
+    cursor.execute('''CREATE TABLE trains (
+                    id INTEGER PRIMARY KEY,
+                    name TEXT NOT NULL,
+                    source TEXT NOT NULL,
+                    destination TEXT NOT NULL,
+                    total_seats INTEGER NOT NULL,
+                    available_seats INTEGER NOT NULL)''')
+    
+    cursor.execute('''CREATE TABLE passengers (
+                    id INTEGER PRIMARY KEY,
+                    name TEXT NOT NULL,
+                    age INTEGER NOT NULL,
+                    contact TEXT UNIQUE NOT NULL)''')
+    
+    cursor.execute('''CREATE TABLE bookings (
+                    id INTEGER PRIMARY KEY,
+                    train_id INTEGER NOT NULL,
+                    passenger_id INTEGER NOT NULL,
+                    status TEXT NOT NULL,
+                    seat_number INTEGER,
+                    booking_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY(train_id) REFERENCES trains(id),
+                    FOREIGN KEY(passenger_id) REFERENCES passengers(id))''')
+    
+    # Insert sample data
+    cursor.executemany("INSERT INTO stations (name, code) VALUES (?, ?)", [
+        ('Mumbai Central', 'BCT'),
+        ('Delhi Junction', 'DLI'),
+        ('Chennai Central', 'MAS'),
+        ('Kolkata Howrah', 'HWH'),
+        ('Bangalore City', 'SBC')
+    ])
+    
+    cursor.executemany("INSERT INTO trains (name, source, destination, total_seats, available_seats) VALUES (?, ?, ?, ?, ?)", [
+        ('Rajdhani Express', 'BCT', 'DLI', 100, 100),
+        ('Shatabdi Express', 'MAS', 'HWH', 80, 80),
+        ('Duronto Express', 'DLI', 'SBC', 120, 120)
+    ])
+    
+    conn.commit()
+    conn.close()
+
+# Railway Graph Class
+class RailwayGraph:
+    def _init_(self):
+        self.graph = {}
+        self.init_routes()
+    
+    def init_routes(self):
+        self.add_route('BCT', 'DLI', 1400)
+        self.add_route('MAS', 'HWH', 1600)
+        self.add_route('DLI', 'SBC', 2150)
+        self.add_route('BCT', 'MAS', 1100)
+        self.add_route('HWH', 'SBC', 1500)
+    
+    def add_route(self, source, destination, distance):
+        if source not in self.graph:
+            self.graph[source] = []
+        if destination not in self.graph:
+            self.graph[destination] = []
+        self.graph[source].append((destination, distance))
+        self.graph[destination].append((source, distance))
+    
+    def shortest_path(self, source, destination):
+        if source not in self.graph or destination not in self.graph:
+            return None, None
+            
+        distances = {node: float('inf') for node in self.graph}
+        distances[source] = 0
+        pq = [(0, source)]
+        path = {}
+        
+        while pq:
+            dist, node = heapq.heappop(pq)
+            if node == destination:
+                break
+            if dist > distances[node]:
+                continue
+            for neighbor, weight in self.graph[node]:
+                new_dist = dist + weight
+                if new_dist < distances[neighbor]:
+                    distances[neighbor] = new_dist
+                    heapq.heappush(pq, (new_dist, neighbor))
+                    path[neighbor] = node
+        
+        if destination not in path:
+            return None, None
+            
+        result = []
+        current = destination
+        while current != source:
+            result.append(current)
+            current = path[current]
+        result.append(source)
+        return result[::-1], distances[destination]
+
+# Create database and graph
+init_db()
+railway_net = RailwayGraph()
+
+# DB Connection Helper
+def get_db():
+    conn = sqlite3.connect('railway.db')
+    conn.row_factory = sqlite3.Row
+    return conn
+
+# Routes
+@app.route('/')
+def index():
+    conn = get_db()
+    try:
+        # Get dashboard statistics
+        cur = conn.execute("SELECT COUNT(*) FROM trains")
+        total_trains = cur.fetchone()[0]
+        
+        cur = conn.execute("SELECT COUNT(*) FROM passengers")
+        total_passengers = cur.fetchone()[0]
+        
+        cur = conn.execute("SELECT COUNT(*) FROM bookings WHERE status != 'cancelled'")
+        active_bookings = cur.fetchone()[0]
+        
+        return render_template('index.html', 
+                              total_trains=total_trains,
+                              total_passengers=total_passengers,
+                              active_bookings=active_bookings)
+    finally:
+        conn.close()
+
+@app.route('/book', methods=['GET', 'POST'])
+def book_ticket():
+    conn = get_db()
+    try:
+        if request.method == 'POST':
+            passenger_id = request.form['passenger_id']
+            train_id = request.form['train_id']
+            
+            # Get available seats
+            cur = conn.execute("SELECT available_seats FROM trains WHERE id = ?", (train_id,))
+            available = cur.fetchone()[0]
+            
+            if available > 0:
+                # Get next seat number
+                cur = conn.execute("SELECT COALESCE(MAX(seat_number), 0) FROM bookings WHERE train_id = ?", (train_id,))
+                last_seat = cur.fetchone()[0]
+                seat_number = last_seat + 1
+                
+                # Create booking
+                conn.execute('''INSERT INTO bookings 
+                             (train_id, passenger_id, status, seat_number) 
+                             VALUES (?, ?, 'confirmed', ?)''',
+                             (train_id, passenger_id, seat_number))
+                
+                # Update seat count
+                conn.execute("UPDATE trains SET available_seats = ? WHERE id = ?", 
+                           (available - 1, train_id))
+                conn.commit()
+                return redirect(url_for('bookings'))
+            else:
+                # Add to waiting list
+                conn.execute('''INSERT INTO bookings 
+                             (train_id, passenger_id, status) 
+                             VALUES (?, ?, 'waiting')''',
+                             (train_id, passenger_id))
+                conn.commit()
+                return redirect(url_for('bookings'))
+        
+        # GET request
+        cur = conn.execute("SELECT * FROM trains")
+        trains = cur.fetchall()
+        
+        cur = conn.execute("SELECT * FROM passengers")
+        passengers = cur.fetchall()
+        
+        return render_template('book.html', trains=trains, passengers=passengers)
+    finally:
+        conn.close()
+
+@app.route('/cancel', methods=['GET', 'POST'])
+def cancel_ticket():
+    conn = get_db()
+    try:
+        if request.method == 'POST':
+            booking_id = request.form['booking_id']
+            
+            # Get booking details
+            cur = conn.execute("SELECT train_id, status FROM bookings WHERE id = ?", (booking_id,))
+            booking = cur.fetchone()
+            
+            if booking:
+                train_id, status = booking['train_id'], booking['status']
+                conn.execute("UPDATE bookings SET status = 'cancelled' WHERE id = ?", (booking_id,))
+                
+                if status == 'confirmed':
+                    # Free up seat
+                    conn.execute("UPDATE trains SET available_seats = available_seats + 1 WHERE id = ?", (train_id,))
+                    
+                    # Promote first waiting booking
+                    cur = conn.execute('''SELECT id FROM bookings 
+                                      WHERE status='waiting' AND train_id=? 
+                                      ORDER BY booking_time LIMIT 1''', (train_id,))
+                    next_booking = cur.fetchone()
+                    
+                    if next_booking:
+                        # Update seat count
+                        conn.execute("UPDATE trains SET available_seats = available_seats - 1 WHERE id = ?", (train_id,))
+                        
+                        # Get next seat number
+                        cur = conn.execute("SELECT COALESCE(MAX(seat_number), 0) FROM bookings WHERE train_id = ?", (train_id,))
+                        last_seat = cur.fetchone()[0]
+                        seat_number = last_seat + 1
+                        
+                        # Update booking
+                        conn.execute('''UPDATE bookings 
+                                     SET status = 'confirmed', seat_number = ?
+                                     WHERE id = ?''', 
+                                     (seat_number, next_booking['id']))
+                
+                conn.commit()
+                return redirect(url_for('bookings'))
+            else:
+                return "Booking not found", 404
+        
+        return render_template('cancel.html')
+    finally:
+        conn.close()
+
+@app.route('/passengers', methods=['GET', 'POST'])
+def passengers():
+    conn = get_db()
+    try:
+        if request.method == 'POST':
+            name = request.form['name']
+            age = request.form['age']
+            contact = request.form['contact']
+            
+            conn.execute('''INSERT INTO passengers (name, age, contact)
+                         VALUES (?, ?, ?)''', (name, age, contact))
+            conn.commit()
+            return redirect(url_for('passengers'))
+        
+        cur = conn.execute("SELECT * FROM passengers")
+        passengers = cur.fetchall()
+        return render_template('passengers.html', passengers=passengers)
+    finally:
+        conn.close()
+
+@app.route('/bookings')
+def bookings():
+    conn = get_db()
+    try:
+        cur = conn.execute('''SELECT b.id, t.name as train_name, p.name as passenger_name, 
+                           b.status, b.seat_number, b.booking_time
+                           FROM bookings b
+                           JOIN trains t ON b.train_id = t.id
+                           JOIN passengers p ON b.passenger_id = p.id''')
+        bookings = cur.fetchall()
+        return render_template('bookings.html', bookings=bookings)
+    finally:
+        conn.close()
+
+@app.route('/routes', methods=['GET', 'POST'])
+def find_route():
+    conn = get_db()
+    try:
+        stations = []
+        path = None
+        distance = None
+        
+        cur = conn.execute("SELECT * FROM stations")
+        stations = cur.fetchall()
+        
+        if request.method == 'POST':
+            source = request.form['source']
+            dest = request.form['dest']
+            path, distance = railway_net.shortest_path(source, dest)
+        
+        return render_template('routes.html', stations=stations, path=path, distance=distance)
+    finally:
+        conn.close()
+
+if _name_ == '_main_':
+    app.run(debug=True)
