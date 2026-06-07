@@ -1,0 +1,56 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Railway Reservation</title>
+</head>
+<body>
+
+    <h2>🚆 Railway Reservation System 🚆</h2>
+
+    <form method="post" action="/reserve">
+        <input type="text" name="name" placeholder="Passenger Name" required>
+
+        <select name="train">
+            <option value="Express 101">Express 101</option>
+            <option value="SuperFast 202">SuperFast 202</option>
+            <option value="Bullet 303">Bullet 303</option>
+        </select>
+
+        <button type="submit">Reserve</button>
+    </form>
+
+    <br>
+
+    <form method="post" action="/cancel">
+        <input type="text" name="name" placeholder="Passenger Name" required>
+
+        <select name="train">
+            <option value="Express 101">Express 101</option>
+            <option value="SuperFast 202">SuperFast 202</option>
+            <option value="Bullet 303">Bullet 303</option>
+        </select>
+
+        <button type="submit">Cancel</button>
+    </form>
+
+    <h3>📋 Current Reservations</h3>
+
+    <table border="1">
+        <tr>
+            <th>Name</th>
+            <th>Train</th>
+            <th>Seat Number</th>
+        </tr>
+
+        {% for name, train, seat in passengers %}
+        <tr>
+            <td>{{ name }}</td>
+            <td>{{ train }}</td>
+            <td>{{ seat }}</td>
+        </tr>
+        {% endfor %}
+    </table>
+
+</body>
+</html>
+
